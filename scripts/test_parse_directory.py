@@ -81,8 +81,12 @@ def report_status(
 def compare_trees(
     actual_tree: ast.AST, file: str, verbose: bool, include_attributes: bool = False,
 ) -> int:
-    with open(file) as f:
-        expected_tree = ast.parse(f.read())
+    try:
+        with open(file) as f:
+            expected_tree = ast.parse(f.read())
+    except SyntaxError:
+        print("Syntax error in ast")
+        return 0
 
     expected_text = ast.dump(expected_tree, include_attributes=include_attributes)
     actual_text = ast.dump(actual_tree, include_attributes=include_attributes)

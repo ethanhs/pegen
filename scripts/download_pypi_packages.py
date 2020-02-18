@@ -6,6 +6,8 @@ import json
 
 from typing import Dict, Any
 from urllib.request import urlretrieve
+from urllib.error import HTTPError
+from multiprocessing import Pool
 
 argparser = argparse.ArgumentParser(
     prog="download_pypi_packages", description="Helper program to download PyPI packages",
@@ -15,6 +17,12 @@ argparser.add_argument(
 )
 argparser.add_argument(
     "-a", "--all", action="store_true", help="Download all packages listed in the json file"
+)
+argparser.add_argument(
+    "--rm", action="store_true", help="Remove JSON after running"
+)
+argparser.add_argument(
+    "-p", "--processes", type=int, default=1, help="Number of concurrent packages to download"
 )
 
 
@@ -31,8 +39,13 @@ def remove_json(filename: str) -> None:
 
 def download_package_json(package_name: str) -> None:
     url = f"https://pypi.org/pypi/{package_name}/json"
-    urlretrieve(url, os.path.join("data", f"{package_name}.json"))
-
+    try:
+        urlretrieve(url, os.path.join("data", f"{package_name}.json"))
+        return 0
+    except HTTPError as e:
+        print(e)
+    return 1
+        
 
 def download_package_code(name: str, package_json: Dict[Any, Any]) -> None:
     source_index = -1
@@ -42,8 +55,36 @@ def download_package_code(name: str, package_json: Dict[Any, Any]) -> None:
             break
     filename = package_json["urls"][source_index]["filename"]
     url = package_json["urls"][source_index]["url"]
-    urlretrieve(url, os.path.join("data", "pypi", filename))
+    dl_path = os.path.join("data", "pypi", filename)
+    if os.path.exists(dl_path):
+        print(f"{name} already downloaded")
+        return
+    try:
+        urlretrieve(url, dl_path)
+    except HTTPError as e:
+        print(e)
 
+
+def analyze_package(package: Dict[Any, Any], remove: bool = False):
+    package_name = package["project"]
+
+    print(f"Downloading JSON Data for {package_name}... ", end="")
+    if download_package_json(package_name):
+        print("Failed downloading package data")
+        continue
+    print("Done")
+
+    package_json = load_json(package_name)
+    try:
+        print(f"Dowloading and compressing package {package_name} ... ", end="")
+        download_package_code(package_name, package_json)
+        print("Done")
+    except (IndexError, KeyError):
+        print(f"Could not locate source for {package_name}")
+        continue
+    finally:
+        if remove:
+            remove_json(package_name)
 
 def main() -> None:
     args = argparser.parse_args()
@@ -62,24 +103,8 @@ def main() -> None:
         os.mkdir(os.path.join("data", "pypi"))
     except FileExistsError:
         pass
-
-    for package in top_pypi_packages:
-        package_name = package["project"]
-
-        print(f"Downloading JSON Data for {package_name}... ", end="")
-        download_package_json(package_name)
-        print("Done")
-
-        package_json = load_json(package_name)
-        try:
-            print(f"Dowloading and compressing package {package_name} ... ", end="")
-            download_package_code(package_name, package_json)
-            print("Done")
-        except (IndexError, KeyError):
-            print(f"Could not locate source for {package_name}")
-            continue
-        finally:
-            remove_json(package_name)
+    pool = Pool(args.processes)
+    pool.imap_unordered(analyze_package, top_pypi_packages, args.remove)
 
 
 if __name__ == "__main__":

@@ -7,8 +7,9 @@ import tarfile
 import zipfile
 import shutil
 import sys
-
-from typing import Generator, Any
+from multiprocessing import Pool
+from functools import partial
+from typing import Generator, Any, Optional
 
 sys.path.insert(0, ".")
 from pegen import build
@@ -20,7 +21,13 @@ argparser = argparse.ArgumentParser(
 argparser.add_argument(
     "-t", "--tree", action="count", help="Compare parse tree to official AST", default=0
 )
+argparser.add_argument(
+    "-p", "--processes", type=int, default=1, help="Number of concurrent packages to check"
+)
 
+extension = build.build_parser_and_generator(
+    "data/simpy.gram", "pegen/parse.c", compile_extension=True
+)
 
 def get_packages() -> Generator[str, None, None]:
     all_packages = (
@@ -42,12 +49,11 @@ def extract_files(filename: str) -> None:
         raise ValueError(f"Could not identify type of compressed file {filename}")
 
 
-def find_dirname(package_name: str) -> str:
+def find_dirname(package_name: str) -> Optional[str]:
     for name in os.listdir(os.path.join("data", "pypi")):
         full_path = os.path.join("data", "pypi", name)
         if os.path.isdir(full_path) and name in package_name:
             return full_path
-    assert False  # This is to fix mypy, should never be reached
 
 
 def run_tests(dirname: str, tree: int, extension: Any) -> int:
@@ -70,32 +76,42 @@ def run_tests(dirname: str, tree: int, extension: Any) -> int:
         extension=extension,
     )
 
+def analyze_package(package: str, tree: bool = True):
+    print(f"Extracting files from {package}... ", end="")
+    try:
+        extract_files(package)
+        print("Done")
+    except ValueError as e:
+        print(e)
+        return
 
-def main() -> None:
-    args = argparser.parse_args()
-    tree = args.tree
-
-    extension = build.build_parser_and_generator(
-        "data/simpy.gram", "pegen/parse.c", compile_extension=True
-    )
-    for package in get_packages():
-        print(f"Extracting files from {package}... ", end="")
-        try:
-            extract_files(package)
-            print("Done")
-        except ValueError as e:
-            print(e)
-            continue
-
-        print(f"Trying to parse all python files ... ")
-        dirname = find_dirname(package)
+    print(f"Trying to parse all python files ... ")
+    dirname = find_dirname(package)
+    if dirname is None:
+        print(f"Package {package} is a single file package")
+        return
+    try:
         status = run_tests(dirname, tree, extension)
-        if status == 0:
-            print("Done")
+    except Exception as e:
+        print(f"Exception encountered in analyzing {package}:\n")
+        print(e)
+        status = 1
+    if status == 0:
+        print("Done")
+        try:
             shutil.rmtree(dirname)
-        else:
-            print(f"Failed to parse {dirname}")
+        except Exception:
+            pass
+    else:
+        print(f"Failed to parse {dirname}")
 
+def safe_analyze_package(package: str, tree: bool = True):
+    try:
+        analyze_package(package, tree)
+    except Exception as e:
+        print(e)
 
 if __name__ == "__main__":
-    main()
+    with Pool(16) as pool:
+        for _ in pool.imap_unordered(safe_analyze_package, get_packages()):
+            pass
